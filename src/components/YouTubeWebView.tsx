@@ -1,9 +1,11 @@
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useImperativeHandle, forwardRef, memo, useMemo } from 'react';
 import {
     View,
     StyleSheet,
     ActivityIndicator,
     Animated,
+    BackHandler,
+    Platform,
 } from 'react-native';
 import { WebView, WebViewNavigation } from 'react-native-webview';
 import { WebViewErrorEvent, WebViewHttpErrorEvent } from 'react-native-webview/lib/WebViewTypes';
@@ -15,6 +17,11 @@ export interface WebViewError {
     description?: string;
 }
 
+export interface YouTubeWebViewRef {
+    goBack: () => boolean;
+    canGoBack: () => boolean;
+}
+
 interface YouTubeWebViewProps {
     url: string;
     onError: (error: WebViewError) => void;
@@ -23,132 +30,37 @@ interface YouTubeWebViewProps {
     timeoutDuration?: number;
 }
 
-const YouTubeWebView: React.FC<YouTubeWebViewProps> = ({
-    url,
-    onError,
-    onLoadStart,
-    onLoadEnd,
-    timeoutDuration = 15000, // 15 seconds default
-}) => {
-    const webViewRef = useRef<WebView>(null);
-    const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const fadeAnim = useRef(new Animated.Value(0)).current;
-
-    const clearTimeoutHandler = useCallback(() => {
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-            timeoutRef.current = null;
-        }
-    }, []);
-
-    const handleLoadStart = useCallback(() => {
-        setIsLoading(true);
-        onLoadStart();
-
-        // Set timeout
-        clearTimeoutHandler();
-        timeoutRef.current = setTimeout(() => {
-            onError({ type: 'timeout' });
-        }, timeoutDuration);
-    }, [onLoadStart, onError, timeoutDuration, clearTimeoutHandler]);
-
-    const handleLoadEnd = useCallback(() => {
-        clearTimeoutHandler();
-        setIsLoading(false);
-        onLoadEnd();
-
-        // Fade in WebView
-        Animated.timing(fadeAnim, {
-            toValue: 1,
-            duration: 300,
-            useNativeDriver: true,
-        }).start();
-    }, [onLoadEnd, fadeAnim, clearTimeoutHandler]);
-
-    const handleError = useCallback((event: WebViewErrorEvent) => {
-        clearTimeoutHandler();
-        setIsLoading(false);
-        onError({
-            type: 'load',
-            description: event.nativeEvent.description,
-        });
-    }, [onError, clearTimeoutHandler]);
-
-    const handleHttpError = useCallback((event: WebViewHttpErrorEvent) => {
-        clearTimeoutHandler();
-        const statusCode = event.nativeEvent.statusCode;
-
-        // Only treat 4xx and 5xx as errors
-        if (statusCode >= 400) {
-            setIsLoading(false);
-            onError({
-                type: 'http',
-                code: statusCode,
-                description: event.nativeEvent.description,
-            });
-        }
-    }, [onError, clearTimeoutHandler]);
-
-    const handleNavigationStateChange = useCallback((navState: WebViewNavigation) => {
-        // Optional: Handle navigation state changes
-        console.log('Navigation:', navState.url);
-    }, []);
-
-    // Cleanup on unmount
-    React.useEffect(() => {
-        return () => {
-            clearTimeoutHandler();
-        };
-    }, [clearTimeoutHandler]);
-
-    return (
-        <View style={styles.container}>
-            <Animated.View style={[styles.webViewContainer, { opacity: fadeAnim }]}>
-                <WebView
-                    ref={webViewRef}
-                    source={{ uri: url }}
-                    style={styles.webView}
-                    onLoadStart={handleLoadStart}
-                    onLoadEnd={handleLoadEnd}
-                    onError={handleError}
-                    onHttpError={handleHttpError}
-                    onNavigationStateChange={handleNavigationStateChange}
-
-                    // WebView Configuration
-                    javaScriptEnabled={true}
-                    domStorageEnabled={true}
-                    startInLoadingState={true}
-                    scalesPageToFit={true}
-                    allowsFullscreenVideo={true}
-                    allowsInlineMediaPlayback={true}
-                    mediaPlaybackRequiresUserAction={false}
-
-                    // Security
-                    originWhitelist={['https://*', 'http://*']}
-
-                    // User Agent (optional, for better compatibility)
-                    userAgent="Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
-
-                    // Rendering
-                    renderLoading={() => <LoadingIndicator />}
-                />
-            </Animated.View>
-
-            {isLoading && (
-                <View style={styles.loadingOverlay}>
-                    <LoadingIndicator />
-                </View>
-            )}
-        </View>
-    );
+// Static WebView config - created once, never recreated
+const WEBVIEW_CONFIG = {
+    javaScriptEnabled: true,
+    domStorageEnabled: true,
+    startInLoadingState: false,
+    scalesPageToFit: true,
+    allowsFullscreenVideo: true,
+    allowsInlineMediaPlayback: true,
+    mediaPlaybackRequiresUserAction: false,
+    allowsBackForwardNavigationGestures: true,
+    scrollEnabled: true,
+    bounces: true,
+    nestedScrollEnabled: true,
+    overScrollMode: 'never' as const,
+    setBuiltInZoomControls: false,
+    setDisplayZoomControls: false,
+    originWhitelist: ['https://*', 'http://*'] as string[],
+    userAgent: 'Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+    mixedContentMode: 'compatibility' as const,
+    allowFileAccess: true,
+    cacheEnabled: true,
+    cacheMode: 'LOAD_DEFAULT' as const,
 };
 
-const LoadingIndicator: React.FC = () => {
+// Memoized Loading Indicator
+const LoadingIndicator = memo(() => {
     const pulseAnim = useRef(new Animated.Value(0.3)).current;
+    const animRef = useRef<Animated.CompositeAnimation | null>(null);
 
     React.useEffect(() => {
-        const pulse = Animated.loop(
+        animRef.current = Animated.loop(
             Animated.sequence([
                 Animated.timing(pulseAnim, {
                     toValue: 1,
@@ -162,13 +74,21 @@ const LoadingIndicator: React.FC = () => {
                 }),
             ])
         );
-        pulse.start();
-        return () => pulse.stop();
-    }, [pulseAnim]);
+        animRef.current.start();
+
+        return () => {
+            if (animRef.current) {
+                animRef.current.stop();
+            }
+            pulseAnim.setValue(0.3);
+        };
+    }, []);
+
+    const animatedStyle = useMemo(() => ({ opacity: pulseAnim }), [pulseAnim]);
 
     return (
         <View style={styles.loadingContainer}>
-            <Animated.View style={[styles.youtubeLogoContainer, { opacity: pulseAnim }]}>
+            <Animated.View style={[styles.youtubeLogoContainer, animatedStyle]}>
                 <View style={styles.youtubeLogo}>
                     <View style={styles.playButton} />
                 </View>
@@ -176,7 +96,162 @@ const LoadingIndicator: React.FC = () => {
             <ActivityIndicator size="small" color={colors.primary} style={styles.spinner} />
         </View>
     );
-};
+});
+
+const YouTubeWebView = memo(forwardRef<YouTubeWebViewRef, YouTubeWebViewProps>(({
+    url,
+    onError,
+    onLoadStart,
+    onLoadEnd,
+    timeoutDuration = 15000,
+}, ref) => {
+    const webViewRef = useRef<WebView>(null);
+    const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [isInitialLoad, setIsInitialLoad] = useState(true);
+    const [canGoBackState, setCanGoBackState] = useState(false);
+    const fadeAnim = useRef(new Animated.Value(0)).current;
+    const isMountedRef = useRef(true);
+
+    // Expose goBack method to parent
+    useImperativeHandle(ref, () => ({
+        goBack: () => {
+            if (canGoBackState && webViewRef.current) {
+                webViewRef.current.goBack();
+                return true;
+            }
+            return false;
+        },
+        canGoBack: () => canGoBackState,
+    }), [canGoBackState]);
+
+    const clearTimeoutHandler = useCallback(() => {
+        if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+        }
+    }, []);
+
+    const handleLoadStart = useCallback(() => {
+        if (!isMountedRef.current) return;
+
+        if (isInitialLoad) {
+            onLoadStart();
+            clearTimeoutHandler();
+            timeoutRef.current = setTimeout(() => {
+                if (isMountedRef.current) {
+                    onError({ type: 'timeout' });
+                }
+            }, timeoutDuration);
+        }
+    }, [isInitialLoad, onLoadStart, onError, timeoutDuration, clearTimeoutHandler]);
+
+    const handleLoadEnd = useCallback(() => {
+        if (!isMountedRef.current) return;
+
+        clearTimeoutHandler();
+
+        if (isInitialLoad) {
+            setIsInitialLoad(false);
+            onLoadEnd();
+
+            Animated.timing(fadeAnim, {
+                toValue: 1,
+                duration: 300,
+                useNativeDriver: true,
+            }).start();
+        }
+    }, [isInitialLoad, onLoadEnd, fadeAnim, clearTimeoutHandler]);
+
+    const handleError = useCallback((event: WebViewErrorEvent) => {
+        if (!isMountedRef.current) return;
+
+        clearTimeoutHandler();
+
+        if (isInitialLoad) {
+            onError({
+                type: 'load',
+                description: event.nativeEvent.description,
+            });
+        }
+    }, [isInitialLoad, onError, clearTimeoutHandler]);
+
+    const handleHttpError = useCallback((event: WebViewHttpErrorEvent) => {
+        if (!isMountedRef.current) return;
+
+        clearTimeoutHandler();
+        const statusCode = event.nativeEvent.statusCode;
+
+        if (statusCode >= 400 && isInitialLoad) {
+            onError({
+                type: 'http',
+                code: statusCode,
+                description: event.nativeEvent.description,
+            });
+        }
+    }, [isInitialLoad, onError, clearTimeoutHandler]);
+
+    const handleNavigationStateChange = useCallback((navState: WebViewNavigation) => {
+        if (!isMountedRef.current) return;
+        setCanGoBackState(navState.canGoBack);
+    }, []);
+
+    // Mount/unmount tracking and cleanup
+    React.useEffect(() => {
+        isMountedRef.current = true;
+        return () => {
+            isMountedRef.current = false;
+            clearTimeoutHandler();
+        };
+    }, [clearTimeoutHandler]);
+
+    // Handle Android back button
+    React.useEffect(() => {
+        if (Platform.OS !== 'android') return;
+
+        const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+            if (canGoBackState && webViewRef.current) {
+                webViewRef.current.goBack();
+                return true;
+            }
+            return false;
+        });
+
+        return () => backHandler.remove();
+    }, [canGoBackState]);
+
+    // Memoize animated container style
+    const animatedContainerStyle = useMemo(() => [
+        styles.webViewContainer,
+        { opacity: isInitialLoad ? 0 : fadeAnim }
+    ], [isInitialLoad, fadeAnim]);
+
+    // Memoize source object
+    const source = useMemo(() => ({ uri: url }), [url]);
+
+    return (
+        <View style={styles.container}>
+            <Animated.View style={animatedContainerStyle}>
+                <WebView
+                    ref={webViewRef}
+                    source={source}
+                    style={styles.webView}
+                    onLoadStart={handleLoadStart}
+                    onLoadEnd={handleLoadEnd}
+                    onError={handleError}
+                    onHttpError={handleHttpError}
+                    onNavigationStateChange={handleNavigationStateChange}
+                    {...WEBVIEW_CONFIG}
+                />
+            </Animated.View>
+
+            {isInitialLoad && (
+                <View style={styles.loadingOverlay}>
+                    <LoadingIndicator />
+                </View>
+            )}
+        </View>
+    );
+}));
 
 const styles = StyleSheet.create({
     container: {

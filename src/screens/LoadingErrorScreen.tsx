@@ -1,11 +1,10 @@
-import React from 'react';
+import React, { memo, useMemo, useCallback } from 'react';
 import {
     View,
     Text,
     StyleSheet,
-    TouchableOpacity,
+    Pressable,
     Animated,
-    Dimensions,
 } from 'react-native';
 import { colors, spacing, typography, borderRadius, shadows } from '../styles/theme';
 
@@ -15,71 +14,106 @@ interface LoadingErrorScreenProps {
     errorMessage?: string;
 }
 
-const { width } = Dimensions.get('window');
+// Memoized Error Icon - static component
+const ErrorIcon = memo(() => (
+    <View style={styles.errorIcon}>
+        <View style={styles.triangleOuter}>
+            <View style={styles.triangleInner}>
+                <Text style={styles.exclamation}>!</Text>
+            </View>
+        </View>
+    </View>
+));
 
-const LoadingErrorScreen: React.FC<LoadingErrorScreenProps> = ({
+// Memoized Status Row
+const StatusRow = memo(({ color, text }: { color: string; text: string }) => (
+    <View style={styles.detailRow}>
+        <View style={[styles.statusDot, { backgroundColor: color }]} />
+        <Text style={styles.detailText}>{text}</Text>
+    </View>
+));
+
+// Error details lookup - moved outside component to avoid recreation
+const ERROR_DETAILS: Record<number, { title: string; description: string }> = {
+    404: {
+        title: 'Página no encontrada',
+        description: 'El contenido que buscas no está disponible o fue eliminado.',
+    },
+    403: {
+        title: 'Acceso denegado',
+        description: 'No tienes permiso para ver este contenido.',
+    },
+    500: {
+        title: 'Error del servidor',
+        description: 'YouTube está experimentando problemas técnicos. Intenta más tarde.',
+    },
+    502: {
+        title: 'Error del servidor',
+        description: 'YouTube está experimentando problemas técnicos. Intenta más tarde.',
+    },
+    503: {
+        title: 'Error del servidor',
+        description: 'YouTube está experimentando problemas técnicos. Intenta más tarde.',
+    },
+};
+
+const DEFAULT_ERROR = {
+    title: 'Error al cargar',
+    description: 'No se pudo cargar el contenido de YouTube.',
+};
+
+const LoadingErrorScreen: React.FC<LoadingErrorScreenProps> = memo(({
     onRetry,
     errorCode,
     errorMessage
 }) => {
     const shakeAnim = React.useRef(new Animated.Value(0)).current;
+    const animationRef = React.useRef<Animated.CompositeAnimation | null>(null);
 
     React.useEffect(() => {
-        const shake = Animated.sequence([
+        animationRef.current = Animated.sequence([
             Animated.timing(shakeAnim, { toValue: 10, duration: 100, useNativeDriver: true }),
             Animated.timing(shakeAnim, { toValue: -10, duration: 100, useNativeDriver: true }),
             Animated.timing(shakeAnim, { toValue: 10, duration: 100, useNativeDriver: true }),
             Animated.timing(shakeAnim, { toValue: 0, duration: 100, useNativeDriver: true }),
         ]);
-        shake.start();
-    }, [shakeAnim]);
+        animationRef.current.start();
 
-    const getErrorDetails = () => {
-        switch (errorCode) {
-            case 404:
-                return {
-                    title: 'Página no encontrada',
-                    description: 'El contenido que buscas no está disponible o fue eliminado.',
-                };
-            case 500:
-            case 502:
-            case 503:
-                return {
-                    title: 'Error del servidor',
-                    description: 'YouTube está experimentando problemas técnicos. Intenta más tarde.',
-                };
-            case 403:
-                return {
-                    title: 'Acceso denegado',
-                    description: 'No tienes permiso para ver este contenido.',
-                };
-            default:
-                return {
-                    title: 'Error al cargar',
-                    description: errorMessage || 'No se pudo cargar el contenido de YouTube.',
-                };
+        return () => {
+            if (animationRef.current) {
+                animationRef.current.stop();
+            }
+            shakeAnim.setValue(0);
+        };
+    }, []);
+
+    // Memoize error details computation
+    const errorDetails = useMemo(() => {
+        if (errorCode && ERROR_DETAILS[errorCode]) {
+            return ERROR_DETAILS[errorCode];
         }
-    };
+        return {
+            title: DEFAULT_ERROR.title,
+            description: errorMessage || DEFAULT_ERROR.description,
+        };
+    }, [errorCode, errorMessage]);
 
-    const { title, description } = getErrorDetails();
+    // Memoize animated style
+    const animatedStyle = useMemo(() => ({
+        transform: [{ translateX: shakeAnim }]
+    }), [shakeAnim]);
+
+    // Memoize handler
+    const handleRetry = useCallback(() => {
+        onRetry();
+    }, [onRetry]);
 
     return (
         <View style={styles.container}>
             <View style={styles.content}>
-                {/* Error Icon */}
-                <Animated.View
-                    style={[
-                        styles.iconContainer,
-                        { transform: [{ translateX: shakeAnim }] }
-                    ]}
-                >
-                    <View style={styles.errorIcon}>
-                        <View style={styles.triangleOuter}>
-                            <View style={styles.triangleInner}>
-                                <Text style={styles.exclamation}>!</Text>
-                            </View>
-                        </View>
-                    </View>
+                {/* Animated Error Icon */}
+                <Animated.View style={[styles.iconContainer, animatedStyle]}>
+                    <ErrorIcon />
                 </Animated.View>
 
                 {/* Error Code Badge */}
@@ -90,35 +124,29 @@ const LoadingErrorScreen: React.FC<LoadingErrorScreenProps> = ({
                 )}
 
                 {/* Text Content */}
-                <Text style={styles.title}>{title}</Text>
-                <Text style={styles.subtitle}>{description}</Text>
+                <Text style={styles.title}>{errorDetails.title}</Text>
+                <Text style={styles.subtitle}>{errorDetails.description}</Text>
 
                 {/* Error Details Card */}
                 <View style={styles.detailsCard}>
-                    <View style={styles.detailRow}>
-                        <View style={[styles.statusDot, { backgroundColor: colors.error }]} />
-                        <Text style={styles.detailText}>No se pudo establecer conexión con YouTube</Text>
-                    </View>
-                    <View style={styles.detailRow}>
-                        <View style={[styles.statusDot, { backgroundColor: colors.warning }]} />
-                        <Text style={styles.detailText}>Puede ser un problema temporal</Text>
-                    </View>
+                    <StatusRow color={colors.error} text="No se pudo establecer conexión con YouTube" />
+                    <StatusRow color={colors.warning} text="Puede ser un problema temporal" />
                 </View>
 
-                {/* Action Buttons */}
-                <View style={styles.buttonContainer}>
-                    <TouchableOpacity
-                        style={styles.retryButton}
-                        onPress={onRetry}
-                        activeOpacity={0.8}
-                    >
-                        <Text style={styles.retryButtonText}>Reintentar</Text>
-                    </TouchableOpacity>
-                </View>
+                {/* Retry Button */}
+                <Pressable
+                    style={({ pressed }) => [
+                        styles.retryButton,
+                        pressed && styles.retryButtonPressed
+                    ]}
+                    onPress={handleRetry}
+                >
+                    <Text style={styles.retryButtonText}>Reintentar</Text>
+                </Pressable>
             </View>
         </View>
     );
-};
+});
 
 const styles = StyleSheet.create({
     container: {
@@ -130,7 +158,8 @@ const styles = StyleSheet.create({
     },
     content: {
         alignItems: 'center',
-        maxWidth: width * 0.85,
+        width: '85%',
+        maxWidth: 400,
     },
     iconContainer: {
         width: 120,
@@ -218,16 +247,16 @@ const styles = StyleSheet.create({
         color: colors.textSecondary,
         flex: 1,
     },
-    buttonContainer: {
-        flexDirection: 'row',
-        gap: spacing.md,
-    },
     retryButton: {
         backgroundColor: colors.primary,
         paddingVertical: spacing.md,
         paddingHorizontal: spacing.xxl,
         borderRadius: borderRadius.full,
         ...shadows.medium,
+    },
+    retryButtonPressed: {
+        opacity: 0.8,
+        transform: [{ scale: 0.98 }],
     },
     retryButtonText: {
         ...typography.button,

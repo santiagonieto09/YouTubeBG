@@ -1,12 +1,11 @@
-import React from 'react';
+import React, { memo, useMemo, useCallback } from 'react';
 import {
     View,
     Text,
     StyleSheet,
-    TouchableOpacity,
+    Pressable,
     Animated,
     Easing,
-    Dimensions,
 } from 'react-native';
 import { colors, spacing, typography, borderRadius, shadows } from '../styles/theme';
 
@@ -14,15 +13,61 @@ interface TimeoutScreenProps {
     onRetry: () => void;
 }
 
-const { width } = Dimensions.get('window');
+// Pre-computed hour marker degrees - created once, never recreated
+const HOUR_MARKER_DEGREES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330] as const;
 
-const TimeoutScreen: React.FC<TimeoutScreenProps> = ({ onRetry }) => {
+// Memoized Hour Marker
+const HourMarker = memo(({ deg }: { deg: number }) => (
+    <View
+        style={[
+            styles.hourMarker,
+            { transform: [{ rotate: `${deg}deg` }, { translateY: -32 }] }
+        ]}
+    />
+));
+
+// Memoized Clock Face (static parts)
+const ClockMarkers = memo(() => (
+    <>
+        {HOUR_MARKER_DEGREES.map((deg) => (
+            <HourMarker key={deg} deg={deg} />
+        ))}
+    </>
+));
+
+// Memoized Suggestion Item
+const SuggestionItem = memo(({ text }: { text: string }) => (
+    <Text style={styles.suggestion}>{text}</Text>
+));
+
+// Memoized Quality Bars
+const QualityBars = memo(() => (
+    <View style={styles.qualityBars}>
+        <View style={[styles.qualityBar, styles.qualityBarActive]} />
+        <View style={[styles.qualityBar, styles.qualityBarWeak]} />
+        <View style={styles.qualityBar} />
+        <View style={styles.qualityBar} />
+    </View>
+));
+
+// Memoized Suggestions Section
+const SuggestionsSection = memo(() => (
+    <View style={styles.suggestionList}>
+        <SuggestionItem text="• Cambia a una red WiFi más estable" />
+        <SuggestionItem text="• Acércate al router" />
+        <SuggestionItem text="• Cierra otras apps que usen internet" />
+        <SuggestionItem text="• Intenta de nuevo en unos momentos" />
+    </View>
+));
+
+const TimeoutScreen: React.FC<TimeoutScreenProps> = memo(({ onRetry }) => {
     const spinAnim = React.useRef(new Animated.Value(0)).current;
     const fadeAnim = React.useRef(new Animated.Value(0)).current;
+    const spinAnimRef = React.useRef<Animated.CompositeAnimation | null>(null);
 
     React.useEffect(() => {
-        // Slow spin animation for clock
-        const spin = Animated.loop(
+        // Spin animation - store reference for cleanup
+        spinAnimRef.current = Animated.loop(
             Animated.timing(spinAnim, {
                 toValue: 1,
                 duration: 3000,
@@ -30,46 +75,55 @@ const TimeoutScreen: React.FC<TimeoutScreenProps> = ({ onRetry }) => {
                 useNativeDriver: true,
             })
         );
-        spin.start();
+        spinAnimRef.current.start();
 
-        // Fade in content
+        // Fade in animation - one-time, no need to store
         Animated.timing(fadeAnim, {
             toValue: 1,
             duration: 500,
             useNativeDriver: true,
         }).start();
 
-        return () => spin.stop();
-    }, [spinAnim, fadeAnim]);
+        return () => {
+            if (spinAnimRef.current) {
+                spinAnimRef.current.stop();
+            }
+            spinAnim.setValue(0);
+            fadeAnim.setValue(0);
+        };
+    }, []);
 
-    const spinInterpolation = spinAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: ['0deg', '360deg'],
-    });
+    // Memoize interpolation
+    const spinInterpolation = useMemo(() =>
+        spinAnim.interpolate({
+            inputRange: [0, 1],
+            outputRange: ['0deg', '360deg'],
+        }), [spinAnim]
+    );
+
+    // Memoize animated styles
+    const clockHandStyle = useMemo(() => ({
+        transform: [{ rotate: spinInterpolation }]
+    }), [spinInterpolation]);
+
+    const contentStyle = useMemo(() => ({
+        opacity: fadeAnim
+    }), [fadeAnim]);
+
+    // Memoize handler
+    const handleRetry = useCallback(() => {
+        onRetry();
+    }, [onRetry]);
 
     return (
         <View style={styles.container}>
-            <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
+            <Animated.View style={[styles.content, contentStyle]}>
                 {/* Clock Icon */}
                 <View style={styles.iconContainer}>
                     <View style={styles.clockFace}>
-                        <Animated.View
-                            style={[
-                                styles.clockHand,
-                                { transform: [{ rotate: spinInterpolation }] }
-                            ]}
-                        />
+                        <Animated.View style={[styles.clockHand, clockHandStyle]} />
                         <View style={styles.clockCenter} />
-                        {/* Hour markers */}
-                        {[0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330].map((deg, i) => (
-                            <View
-                                key={i}
-                                style={[
-                                    styles.hourMarker,
-                                    { transform: [{ rotate: `${deg}deg` }, { translateY: -32 }] }
-                                ]}
-                            />
-                        ))}
+                        <ClockMarkers />
                     </View>
                 </View>
 
@@ -87,38 +141,30 @@ const TimeoutScreen: React.FC<TimeoutScreenProps> = ({ onRetry }) => {
                         <Text style={styles.statusTitle}>Conexión lenta detectada</Text>
                     </View>
 
-                    <View style={styles.suggestionList}>
-                        <Text style={styles.suggestion}>• Cambia a una red WiFi más estable</Text>
-                        <Text style={styles.suggestion}>• Acércate al router</Text>
-                        <Text style={styles.suggestion}>• Cierra otras apps que usen internet</Text>
-                        <Text style={styles.suggestion}>• Intenta de nuevo en unos momentos</Text>
-                    </View>
+                    <SuggestionsSection />
 
                     {/* Connection Quality Indicator */}
                     <View style={styles.qualityContainer}>
                         <Text style={styles.qualityLabel}>Calidad de conexión:</Text>
-                        <View style={styles.qualityBars}>
-                            <View style={[styles.qualityBar, styles.qualityBarActive]} />
-                            <View style={[styles.qualityBar, styles.qualityBarWeak]} />
-                            <View style={styles.qualityBar} />
-                            <View style={styles.qualityBar} />
-                        </View>
+                        <QualityBars />
                         <Text style={styles.qualityText}>Débil</Text>
                     </View>
                 </View>
 
                 {/* Retry Button */}
-                <TouchableOpacity
-                    style={styles.retryButton}
-                    onPress={onRetry}
-                    activeOpacity={0.8}
+                <Pressable
+                    style={({ pressed }) => [
+                        styles.retryButton,
+                        pressed && styles.retryButtonPressed
+                    ]}
+                    onPress={handleRetry}
                 >
                     <Text style={styles.retryButtonText}>Reintentar</Text>
-                </TouchableOpacity>
+                </Pressable>
             </Animated.View>
         </View>
     );
-};
+});
 
 const styles = StyleSheet.create({
     container: {
@@ -130,7 +176,8 @@ const styles = StyleSheet.create({
     },
     content: {
         alignItems: 'center',
-        maxWidth: width * 0.85,
+        width: '85%',
+        maxWidth: 400,
     },
     iconContainer: {
         width: 120,
@@ -265,6 +312,10 @@ const styles = StyleSheet.create({
         paddingHorizontal: spacing.xxl,
         borderRadius: borderRadius.full,
         ...shadows.medium,
+    },
+    retryButtonPressed: {
+        opacity: 0.8,
+        transform: [{ scale: 0.98 }],
     },
     retryButtonText: {
         ...typography.button,

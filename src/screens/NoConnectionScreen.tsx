@@ -1,11 +1,11 @@
-import React from 'react';
+import React, { memo, useMemo, useCallback } from 'react';
 import {
     View,
     Text,
     StyleSheet,
     TouchableOpacity,
     Animated,
-    Dimensions,
+    Pressable,
 } from 'react-native';
 import { colors, spacing, typography, borderRadius, shadows } from '../styles/theme';
 
@@ -13,13 +13,39 @@ interface NoConnectionScreenProps {
     onRetry: () => void;
 }
 
-const { width } = Dimensions.get('window');
+// Memoized TipItem to prevent re-renders
+const TipItem = memo(({ text }: { text: string }) => (
+    <Text style={styles.tip}>{text}</Text>
+));
 
-const NoConnectionScreen: React.FC<NoConnectionScreenProps> = ({ onRetry }) => {
+// Memoized WiFi Icon component - static, no need to re-render
+const WiFiIcon = memo(() => (
+    <View style={styles.wifiIcon}>
+        <View style={[styles.wifiArc, styles.wifiArc1]} />
+        <View style={[styles.wifiArc, styles.wifiArc2]} />
+        <View style={[styles.wifiArc, styles.wifiArc3]} />
+        <View style={styles.wifiDot} />
+        <View style={styles.crossLine} />
+    </View>
+));
+
+// Memoized Tips container
+const TipsSection = memo(() => (
+    <View style={styles.tipsContainer}>
+        <Text style={styles.tipTitle}>Sugerencias:</Text>
+        <TipItem text="• Activa el WiFi o los datos móviles" />
+        <TipItem text="• Comprueba la configuración de red" />
+        <TipItem text="• Reinicia el router si es necesario" />
+    </View>
+));
+
+const NoConnectionScreen: React.FC<NoConnectionScreenProps> = memo(({ onRetry }) => {
     const pulseAnim = React.useRef(new Animated.Value(1)).current;
+    const animationRef = React.useRef<Animated.CompositeAnimation | null>(null);
 
     React.useEffect(() => {
-        const pulse = Animated.loop(
+        // Create animation only once
+        animationRef.current = Animated.loop(
             Animated.sequence([
                 Animated.timing(pulseAnim, {
                     toValue: 1.1,
@@ -33,56 +59,59 @@ const NoConnectionScreen: React.FC<NoConnectionScreenProps> = ({ onRetry }) => {
                 }),
             ])
         );
-        pulse.start();
-        return () => pulse.stop();
-    }, [pulseAnim]);
+        animationRef.current.start();
+
+        return () => {
+            // Proper cleanup
+            if (animationRef.current) {
+                animationRef.current.stop();
+            }
+            pulseAnim.setValue(1);
+        };
+    }, []);
+
+    // Memoize the transform style
+    const animatedStyle = useMemo(() => ({
+        transform: [{ scale: pulseAnim }]
+    }), [pulseAnim]);
+
+    // Memoize retry handler
+    const handleRetry = useCallback(() => {
+        onRetry();
+    }, [onRetry]);
 
     return (
         <View style={styles.container}>
             <View style={styles.content}>
-                {/* WiFi Icon */}
-                <Animated.View
-                    style={[
-                        styles.iconContainer,
-                        { transform: [{ scale: pulseAnim }] }
-                    ]}
-                >
-                    <View style={styles.wifiIcon}>
-                        <View style={[styles.wifiArc, styles.wifiArc1]} />
-                        <View style={[styles.wifiArc, styles.wifiArc2]} />
-                        <View style={[styles.wifiArc, styles.wifiArc3]} />
-                        <View style={styles.wifiDot} />
-                        <View style={styles.crossLine} />
-                    </View>
+                {/* Animated Icon Container */}
+                <Animated.View style={[styles.iconContainer, animatedStyle]}>
+                    <WiFiIcon />
                 </Animated.View>
 
-                {/* Text Content */}
+                {/* Text Content - Static */}
                 <Text style={styles.title}>Sin conexión a Internet</Text>
                 <Text style={styles.subtitle}>
                     No se puede conectar a YouTube.{'\n'}
                     Verifica tu conexión y vuelve a intentarlo.
                 </Text>
 
-                {/* Tips */}
-                <View style={styles.tipsContainer}>
-                    <Text style={styles.tipTitle}>Sugerencias:</Text>
-                    <Text style={styles.tip}>• Activa el WiFi o los datos móviles</Text>
-                    <Text style={styles.tip}>• Comprueba la configuración de red</Text>
-                    <Text style={styles.tip}>• Reinicia el router si es necesario</Text>
-                </View>
+                {/* Tips Section - Memoized */}
+                <TipsSection />
 
-                {/* Retry Button */}
-                <TouchableOpacity
-                    style={styles.retryButton}
-                    onPress={onRetry}
-                    activeOpacity={0.8}
+                {/* Retry Button - Use Pressable for better performance */}
+                <Pressable
+                    style={({ pressed }) => [
+                        styles.retryButton,
+                        pressed && styles.retryButtonPressed
+                    ]}
+                    onPress={handleRetry}
                 >
                     <Text style={styles.retryButtonText}>Reintentar</Text>
-                </TouchableOpacity>
+                </Pressable>
             </View>
         </View>
     );
-};
+});
 
 const styles = StyleSheet.create({
     container: {
@@ -94,7 +123,8 @@ const styles = StyleSheet.create({
     },
     content: {
         alignItems: 'center',
-        maxWidth: width * 0.85,
+        width: '85%',
+        maxWidth: 400,
     },
     iconContainer: {
         width: 120,
@@ -187,6 +217,10 @@ const styles = StyleSheet.create({
         paddingHorizontal: spacing.xxl,
         borderRadius: borderRadius.full,
         ...shadows.medium,
+    },
+    retryButtonPressed: {
+        opacity: 0.8,
+        transform: [{ scale: 0.98 }],
     },
     retryButtonText: {
         ...typography.button,
