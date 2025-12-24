@@ -9,7 +9,9 @@ import {
 } from 'react-native';
 import { WebView, WebViewNavigation } from 'react-native-webview';
 import { WebViewErrorEvent, WebViewHttpErrorEvent } from 'react-native-webview/lib/WebViewTypes';
+import { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
 import { colors } from '../styles/theme';
+import { getUrlBlocker, getScriptInjector } from '../adblock';
 
 export interface WebViewError {
     type: 'http' | 'load' | 'timeout';
@@ -30,7 +32,15 @@ interface YouTubeWebViewProps {
     timeoutDuration?: number;
 }
 
-// Static WebView config - created once, never recreated
+// Initialize ad blocker services (singleton pattern)
+const urlBlocker = getUrlBlocker();
+const scriptInjector = getScriptInjector();
+
+// Get injection scripts once
+const INJECTED_JAVASCRIPT = scriptInjector.getInjectedJavaScript();
+const PRELOAD_SCRIPT = scriptInjector.getPreloadScript();
+
+// Static WebView config
 const WEBVIEW_CONFIG = {
     javaScriptEnabled: true,
     domStorageEnabled: true,
@@ -52,6 +62,9 @@ const WEBVIEW_CONFIG = {
     allowFileAccess: true,
     cacheEnabled: true,
     cacheMode: 'LOAD_DEFAULT' as const,
+    // Ad blocking scripts
+    injectedJavaScript: INJECTED_JAVASCRIPT,
+    injectedJavaScriptBeforeContentLoaded: PRELOAD_SCRIPT,
 };
 
 // Memoized Loading Indicator
@@ -195,6 +208,25 @@ const YouTubeWebView = memo(forwardRef<YouTubeWebViewRef, YouTubeWebViewProps>((
         setCanGoBackState(navState.canGoBack);
     }, []);
 
+    /**
+     * URL Interception Handler - Primary Ad Blocking Defense
+     * Intercepts all URL requests and blocks ad-related ones
+     */
+    const handleShouldStartLoadWithRequest = useCallback((request: ShouldStartLoadRequest): boolean => {
+        const { url: requestUrl } = request;
+
+        // Check if URL should be blocked
+        const result = urlBlocker.shouldBlock(requestUrl);
+
+        if (result.blocked) {
+            // URL is blocked - don't load it
+            return false;
+        }
+
+        // URL is allowed - proceed with loading
+        return true;
+    }, []);
+
     // Mount/unmount tracking and cleanup
     React.useEffect(() => {
         isMountedRef.current = true;
@@ -240,6 +272,7 @@ const YouTubeWebView = memo(forwardRef<YouTubeWebViewRef, YouTubeWebViewProps>((
                     onError={handleError}
                     onHttpError={handleHttpError}
                     onNavigationStateChange={handleNavigationStateChange}
+                    onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
                     {...WEBVIEW_CONFIG}
                 />
             </Animated.View>
